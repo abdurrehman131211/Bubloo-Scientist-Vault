@@ -1,6 +1,6 @@
 # Bubloo Scientist · Password Vault
 
-A simple personal password manager with a calm, responsive interface. Supabase provides account authentication and encrypted storage. Deployment is left to the owner.
+A branded password manager with free and manually approved unlimited plans with a calm, responsive interface. Supabase provides account authentication and encrypted storage. Deployment is left to the owner.
 
 ## Start locally
 
@@ -19,7 +19,7 @@ Open http://localhost:5173. Run `npm test` for cryptography tests and `npm run b
 1. Create an account using your own email and a unique account password (12+ characters). Confirm the email from Supabase, then sign in.
 2. Choose a separate master passphrase (16+ characters; a long unique phrase is best). Keep an offline copy somewhere safe. **It cannot be recovered or reset.** Account password recovery cannot decrypt your vault.
 3. Add your passwords or generate new ones. Export an encrypted backup periodically.
-4. For personal-only use, disable new user signups in Supabase Authentication settings after creating your account. Until then, anyone who finds the app can create an isolated account; RLS prevents access to yours.
+4. Members can register verified accounts and store five passwords free. Keep signups enabled for members. See ADMIN.md for email approvals, subscriptions, expiry dates, and the website viewer.
 
 ## Deploy it yourself
 
