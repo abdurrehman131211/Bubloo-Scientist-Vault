@@ -1,0 +1,14 @@
+create table public.vault_config(user_id uuid primary key references auth.users(id) on delete cascade, salt text not null, verifier jsonb not null, created_at timestamptz not null default now());
+create table public.vault_items(id uuid primary key, user_id uuid not null references public.vault_config(user_id) on delete cascade, payload jsonb not null, updated_at timestamptz not null default now());
+alter table public.vault_config enable row level security;
+alter table public.vault_items enable row level security;
+revoke all on public.vault_config,public.vault_items from anon,authenticated;
+grant select,insert on public.vault_config to authenticated;
+grant select,insert,update,delete on public.vault_items to authenticated;
+create policy config_read on public.vault_config for select to authenticated using ((select auth.uid())=user_id);
+create policy config_create on public.vault_config for insert to authenticated with check ((select auth.uid())=user_id);
+create policy items_read on public.vault_items for select to authenticated using ((select auth.uid())=user_id);
+create policy items_create on public.vault_items for insert to authenticated with check ((select auth.uid())=user_id);
+create policy items_update on public.vault_items for update to authenticated using ((select auth.uid())=user_id) with check ((select auth.uid())=user_id);
+create policy items_delete on public.vault_items for delete to authenticated using ((select auth.uid())=user_id);
+create index vault_items_user_id_idx on public.vault_items(user_id);
