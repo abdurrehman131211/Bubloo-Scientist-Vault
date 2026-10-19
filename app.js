@@ -1,3 +1,4 @@
+import { createRememberedSession, REMEMBER_KEY } from './remember-session.js';
 import { setupDeviceUnlock } from './device-unlock.js';
 import { setupPlans } from './plans.js';
 import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
@@ -12,10 +13,10 @@ function clearNotice(){ $('notice').hidden=true;document.querySelectorAll('.dial
 function lock(){ device.onLock(); plans.onLock(); epoch++; key=null; items=[]; editing=null; itemForm.reset(); $('editor').close(); $('search').value=''; $('list').replaceChildren(); unlockForm.reset(); $('count').textContent='0'; $('item-total').textContent='0'; render(); }
 function render(){ $('auth-panel').hidden=!!session; $('unlock-panel').hidden=!session||!!key; $('vault-panel').hidden=!session||!key; $('lock').hidden=!key; $('signout').hidden=!session; $('account-label').textContent=session?.user.email||'Private by design'; $('unlock-title').textContent=config?'Unlock your vault.':'Create your private vault.'; $('unlock-submit').textContent=config?'Unlock vault →':'Create encrypted vault →'; $('confirm-label').hidden=!!config; unlockForm.elements.confirm.required=!config; $('unlock-help').textContent=config?'Enter your master passphrase to decrypt your passwords on this device.':'Choose a master passphrase. Only you will know it.'; plans.render();device.render();void device.probe(); if(key) renderItems(); }
 async function api(path,{method='GET',body,auth=true}={}){
-  if(auth&&!session) throw new Error('Please sign in again.');
+  if(auth){await remembered.ensureFresh();if(!session)throw new Error('Please sign in again.');}
   const response=await fetch(SUPABASE_URL+path,{method,headers:{apikey:SUPABASE_KEY,'Content-Type':'application/json',...(auth?{Authorization:'Bearer '+session.access_token}:{}),...(path.startsWith('/rest/')?{Prefer:'return=representation'}:{})},...(body?{body:JSON.stringify(body)}:{})});
   const data=await response.json().catch(()=>null);
-  if(!response.ok){ if(auth&&response.status===401){session=null;config=null;lock();} throw new Error(data?.msg||data?.message||data?.error_description||'Request failed. Please try again.'); }
+  if(!response.ok){ if(auth&&response.status===401){remembered.clear();} throw new Error(data?.msg||data?.message||data?.error_description||'Request failed. Please try again.'); }
   return data;
 }
 async function run(form,fn){ const buttons=[...form.querySelectorAll('button')]; buttons.forEach(b=>b.disabled=true); clearNotice(); try{await fn();}catch(error){notify(error.message||'Something went wrong.',true);}finally{buttons.forEach(b=>b.disabled=false);} }
@@ -25,8 +26,8 @@ authForm.onsubmit=event=>{event.preventDefault();run(authForm,async()=>{
   const result=await api(signup?'/auth/v1/signup':'/auth/v1/token?grant_type=password',{method:'POST',auth:false,body:{email,password}});
   authForm.elements.password.value='';
   if(!result.access_token){notify('Check your email to confirm your account, then sign in.');return;}
-  session=result; lock();
-  try{ const rows=await api('/rest/v1/vault_config?select=*'); config=rows[0]||null; await plans.refresh(); render(); }catch(error){session=null;config=null;lock();throw error;}
+  const saved=remembered.set(result,$('keep-signed-in').checked);lock();if(!saved)notify('Signed in, but this browser could not remember your session.');
+  try{ const rows=await api('/rest/v1/vault_config?select=*'); config=rows[0]||null; await plans.refresh(); render(); }catch(error){remembered.clear({remove:false});throw error;}
 });};
 unlockForm.onsubmit=event=>{event.preventDefault();run(unlockForm,async()=>{
   const currentEpoch=epoch, owner=session.user.id, phrase=unlockForm.elements.master.value;
@@ -38,7 +39,7 @@ unlockForm.onsubmit=event=>{event.preventDefault();run(unlockForm,async()=>{
   await completeUnlock(candidate,currentEpoch,owner);
 });};
 $('lock').onclick=()=>{lock();notify('Vault locked.');};
-$('signout').onclick=async()=>{const token=session?.access_token;session=null;config=null;lock();notify('Signed out on this device.');if(token)await fetch(SUPABASE_URL+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+token}}).catch(()=>{});};
+$('signout').onclick=async()=>{const token=session?.access_token;remembered.clear();notify('Signed out on this device.');if(token)await fetch(SUPABASE_URL+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+token}}).catch(()=>{});};
 for(const event of ['pointerdown','keydown','scroll','touchstart'])window.addEventListener(event,()=>{lastActivity=Date.now();},{passive:true});
 setInterval(()=>{if(key&&Date.now()-lastActivity>=300000){lock();notify('Vault locked after 5 minutes of inactivity.');}},1000);
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&key){lock();notify('Vault locked while you were away.');}});
@@ -78,6 +79,21 @@ async function completeUnlock(candidate,currentEpoch,owner){
  if(currentEpoch!==epoch||session?.user.id!==owner||document.hidden)throw new Error('The session changed. Please unlock again.');
  key=candidate;items=decrypted;lastActivity=Date.now();unlockForm.reset();render();notify('Your vault is unlocked. Welcome back.');
 }
+const remembered=createRememberedSession({
+ url:SUPABASE_URL,apiKey:SUPABASE_KEY,
+ storage:{getItem:k=>localStorage.getItem(k),setItem:(k,v)=>localStorage.setItem(k,v),removeItem:k=>localStorage.removeItem(k)},
+ lock:navigator.locks?fn=>navigator.locks.request('bubloo-auth-refresh',fn):undefined,
+ onChange:next=>{const previous=session;session=next;if(previous&&previous.user.id!==next?.user.id){config=null;lock();}}
+});
 const plans=setupPlans({api,notify,getSession:()=>session,isUnlocked:()=>!!key});
 const device=setupDeviceUnlock({getSession:()=>session,getConfig:()=>config,isUnlocked:()=>!!key,getEpoch:()=>epoch,unlock:completeUnlock,notify});
 render();
+async function restoreSignIn(){
+ const buttons=[...authForm.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+ try{const restored=await remembered.restore();if(restored){$('keep-signed-in').checked=true;const rows=await api('/rest/v1/vault_config?select=*');config=rows[0]||null;await plans.refresh();render();notify('Welcome back. Unlock your vault to continue.');}}
+ catch(error){remembered.clear({remove:false});notify(error.message||'Unable to reconnect. Check your connection and reload, or sign in again.',true);}
+ finally{buttons.forEach(b=>b.disabled=false);}
+}
+window.addEventListener('storage',event=>{if(event.key===REMEMBER_KEY)remembered.storageChanged();});
+setInterval(()=>{if(session&&!document.hidden)void remembered.ensureFresh().catch(()=>{});},30000);
+void restoreSignIn();

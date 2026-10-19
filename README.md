@@ -43,7 +43,7 @@ Open http://localhost:5173. Run `npm test` for cryptography tests and `npm run b
 ## Security design and limits
 
 - Native Web Crypto AES-256-GCM, fresh random 96-bit nonce per encryption, a random 256-bit salt, and PBKDF2-HMAC-SHA-256 with 600,000 iterations. Authenticated additional data binds each record to its user and item ID.
-- Master passphrase is never sent to Supabase. Active vault keys are non-extractable and held only in memory. Optional mobile device unlock stores only a passkey-PRF-encrypted key wrapper in this browser; see DEVICE-UNLOCK.md. Authentication tokens are also memory-only; reload requires sign-in. Expired sessions require sign-in again.
+- Master passphrase is never sent to Supabase. Active vault keys are non-extractable and held only in memory. Optional mobile device unlock stores only a passkey-PRF-encrypted key wrapper in this browser; see DEVICE-UNLOCK.md. Account sessions stay in memory by default. With Keep me signed in enabled, only a rotating refresh credential and account ID are remembered in this browser. Reload restores the account session through Supabase but leaves the vault locked. Signing out removes the remembered sign-in.
 - Supabase RLS and ownership checks protect each user's rows. Vault config cannot be updated/deleted by the client. Supabase can see account information, salt, ciphertext sizes, item counts/IDs, and timestamps.
 - Password copying writes to the system clipboard. Clear it after pasting; clipboard history can retain secrets.
 - Locking removes app references and clears forms; JavaScript cannot guarantee physical memory erasure. A compromised browser/device or maliciously changed application can read secrets while unlocked. This custom app has not had an independent security audit.
@@ -56,3 +56,7 @@ Crypto tests verify round trips, wrong passphrase rejection, ciphertext tamper r
 ## Installable app and mobile device unlock
 
 Use **Install app** in the header. Compatible phones can optionally enable **Unlock with biometrics** from the locked-vault screen after confirming the master passphrase. The phone may use fingerprint, face recognition, or screen-lock PIN. Account sign-in remains separate. Browser/passkey PRF support is required; unsupported devices keep the passphrase fallback. See [DEVICE-UNLOCK.md](DEVICE-UNLOCK.md) for setup, limitations and recovery. No offline vault access is added.
+
+## Keep me signed in
+
+Select **Keep me signed in on this device** before signing in. The browser remembers a rotating account refresh credential and restores your account session after reload/reopening, subject to Supabase session validity. Your account password, master passphrase, vault entries and active decryption key are not saved by this option. Vault auto-lock and optional biometric unlock remain unchanged. Unchecked sign-ins stay in memory; reloading requires sign-in. Use Sign out to forget the remembered session. Private mode/browser storage restrictions may prevent persistence.
