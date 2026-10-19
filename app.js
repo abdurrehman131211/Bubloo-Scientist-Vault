@@ -1,3 +1,4 @@
+import { setupDeviceUnlock } from './device-unlock.js';
 import { setupPlans } from './plans.js';
 import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
 import { derive, seal, open, salt, generatePassword } from './crypto.js';
@@ -8,8 +9,8 @@ let session=null, config=null, key=null, items=[], signup=false, editing=null, e
 const authForm=$('auth-form'), unlockForm=$('unlock-form'), itemForm=$('item-form');
 function notify(message,error=false){ $('notice').textContent=message; $('notice').className=error?'error':''; $('notice').hidden=false; const dialogs=[...document.querySelectorAll('dialog[open]')];const active=dialogs[dialogs.length-1];if(active){let feedback=active.querySelector('.dialog-feedback');if(!feedback){feedback=document.createElement('p');feedback.className='dialog-feedback';feedback.setAttribute('role','status');active.querySelector('.dialog-heading').after(feedback);}feedback.textContent=message;} }
 function clearNotice(){ $('notice').hidden=true;document.querySelectorAll('.dialog-feedback').forEach(n=>n.remove()); }
-function lock(){ plans.onLock(); epoch++; key=null; items=[]; editing=null; itemForm.reset(); $('editor').close(); $('search').value=''; $('list').replaceChildren(); unlockForm.reset(); $('count').textContent='0'; $('item-total').textContent='0'; render(); }
-function render(){ $('auth-panel').hidden=!!session; $('unlock-panel').hidden=!session||!!key; $('vault-panel').hidden=!session||!key; $('lock').hidden=!key; $('signout').hidden=!session; $('account-label').textContent=session?.user.email||'Private by design'; $('unlock-title').textContent=config?'Unlock your vault.':'Create your private vault.'; $('unlock-submit').textContent=config?'Unlock vault →':'Create encrypted vault →'; $('confirm-label').hidden=!!config; unlockForm.elements.confirm.required=!config; $('unlock-help').textContent=config?'Enter your master passphrase to decrypt your passwords on this device.':'Choose a master passphrase. Only you will know it.'; plans.render(); if(key) renderItems(); }
+function lock(){ device.onLock(); plans.onLock(); epoch++; key=null; items=[]; editing=null; itemForm.reset(); $('editor').close(); $('search').value=''; $('list').replaceChildren(); unlockForm.reset(); $('count').textContent='0'; $('item-total').textContent='0'; render(); }
+function render(){ $('auth-panel').hidden=!!session; $('unlock-panel').hidden=!session||!!key; $('vault-panel').hidden=!session||!key; $('lock').hidden=!key; $('signout').hidden=!session; $('account-label').textContent=session?.user.email||'Private by design'; $('unlock-title').textContent=config?'Unlock your vault.':'Create your private vault.'; $('unlock-submit').textContent=config?'Unlock vault →':'Create encrypted vault →'; $('confirm-label').hidden=!!config; unlockForm.elements.confirm.required=!config; $('unlock-help').textContent=config?'Enter your master passphrase to decrypt your passwords on this device.':'Choose a master passphrase. Only you will know it.'; plans.render();device.render();void device.probe(); if(key) renderItems(); }
 async function api(path,{method='GET',body,auth=true}={}){
   if(auth&&!session) throw new Error('Please sign in again.');
   const response=await fetch(SUPABASE_URL+path,{method,headers:{apikey:SUPABASE_KEY,'Content-Type':'application/json',...(auth?{Authorization:'Bearer '+session.access_token}:{}),...(path.startsWith('/rest/')?{Prefer:'return=representation'}:{})},...(body?{body:JSON.stringify(body)}:{})});
@@ -34,10 +35,7 @@ unlockForm.onsubmit=event=>{event.preventDefault();run(unlockForm,async()=>{
   const saltValue=config?.salt||salt(), candidate=await derive(phrase,saltValue);
   if(config){ try{ const check=await open(candidate,config.verifier,owner+':verifier'); if(check!=='bubloo-vault-v1') throw new Error(); }catch{throw new Error('Unable to unlock. Check your master passphrase.');} }
   else {const verifier=await seal(candidate,'bubloo-vault-v1',owner+':verifier'); if(currentEpoch!==epoch)return; const rows=await api('/rest/v1/vault_config',{method:'POST',body:{user_id:owner,salt:saltValue,verifier}}); config=rows[0];}
-  await plans.refresh();
-  const encrypted=await fetchEncrypted();
-  const decrypted=await Promise.all(encrypted.map(async row=>({id:row.id,...await open(candidate,row.payload,owner+':'+row.id)})));
-  if(currentEpoch!==epoch)return; key=candidate;items=decrypted;lastActivity=Date.now();unlockForm.reset();render();notify('Your vault is unlocked. Welcome back.');
+  await completeUnlock(candidate,currentEpoch,owner);
 });};
 $('lock').onclick=()=>{lock();notify('Vault locked.');};
 $('signout').onclick=async()=>{const token=session?.access_token;session=null;config=null;lock();notify('Signed out on this device.');if(token)await fetch(SUPABASE_URL+'/auth/v1/logout?scope=local',{method:'POST',headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+token}}).catch(()=>{});};
@@ -72,5 +70,14 @@ $('backup').onclick=()=>run($('vault-panel'),async()=>{const currentEpoch=epoch;
 $('restore').onclick=()=>$('restore-file').click();
 $('restore-file').onchange=event=>{const file=event.target.files[0];event.target.value='';if(!file)return;run($('vault-panel'),async()=>{const currentEpoch=epoch;if(file.size>10000000)throw new Error('Backup is too large (maximum 10 MB).');const backup=JSON.parse(await file.text());if(backup.format!=='bubloo-vault-backup-v1'||backup.config?.user_id!==session.user.id||backup.config?.salt!==config.salt||!Array.isArray(backup.items)||backup.items.length>10000)throw new Error('This backup does not belong to your current vault.');const restored=await Promise.all(backup.items.map(async row=>{if(!/^[0-9a-f-]{36}$/i.test(row.id))throw new Error('Invalid item ID.');const value=await open(key,row.payload,session.user.id+':'+row.id);if(!['title','website','username','secret','notes'].every(f=>typeof value[f]==='string'))throw new Error('Invalid backup item.');return {id:row.id,value,payload:row.payload};}));if(currentEpoch!==epoch)return;const missing=restored.filter(row=>!items.some(item=>item.id===row.id));if(!missing.length){notify('Nothing to restore. All backup items already exist.');return;}await plans.refresh();if(currentEpoch!==epoch||!plans.canAdd(missing.length))return;await api('/rest/v1/vault_items',{method:'POST',body:missing.map(row=>({id:row.id,user_id:session.user.id,payload:row.payload}))});if(currentEpoch!==epoch)return;items.push(...missing.map(row=>({id:row.id,...row.value})));renderItems();notify(missing.length+' missing passwords restored. Existing items were preserved.');await plans.refresh();});};
 async function fetchEncrypted(){const rows=[];for(let offset=0;;offset+=500){const page=await api('/rest/v1/vault_items?select=*&order=id.asc&limit=500&offset='+offset);rows.push(...page);if(page.length<500)return rows;}}
+async function completeUnlock(candidate,currentEpoch,owner){
+ if(currentEpoch!==epoch||session?.user.id!==owner)throw new Error('Sign in again to unlock your vault.');
+ if(await open(candidate,config.verifier,owner+':verifier')!=='bubloo-vault-v1')throw new Error('Unable to verify vault key.');
+ await plans.refresh();const encrypted=await fetchEncrypted();
+ const decrypted=await Promise.all(encrypted.map(async row=>({id:row.id,...await open(candidate,row.payload,owner+':'+row.id)})));
+ if(currentEpoch!==epoch||session?.user.id!==owner||document.hidden)throw new Error('The session changed. Please unlock again.');
+ key=candidate;items=decrypted;lastActivity=Date.now();unlockForm.reset();render();notify('Your vault is unlocked. Welcome back.');
+}
 const plans=setupPlans({api,notify,getSession:()=>session,isUnlocked:()=>!!key});
+const device=setupDeviceUnlock({getSession:()=>session,getConfig:()=>config,isUnlocked:()=>!!key,getEpoch:()=>epoch,unlock:completeUnlock,notify});
 render();
